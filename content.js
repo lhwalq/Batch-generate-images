@@ -416,14 +416,14 @@
         await waitForDownloadSpinnerFinish(previewSource, 90000);
         appendLog("下载转圈状态已结束。");
       } catch (spinnerError) {
-        const started = await waitForDownloadStart(clickStartedAt, baselineIds, 10000);
+        const started = await waitForDownloadStart(clickStartedAt, baselineIds, 5000);
         appendLog("检测到浏览器新下载任务，等待该下载完成。");
         await waitForDownloadCompleteById(started.downloadId, 90000);
         appendLog("浏览器已确认该图片下载完成。");
       }
 
       await sleep(1800);
-      appendLog("等待 5 秒后再处理下一张下载。");
+      appendLog("等待 10 秒后再处理下一张下载。");
       await sleep(5000);
       return true;
     } catch (e) {
@@ -489,7 +489,7 @@
 
         appendLog(`[生图 ${index + 1}/${state.items.length}] 正在启动...`);
         await setPromptValue(item.prompt_en);
-        await sleep(1000); 
+        await sleep(3000); 
 
         const btn = getSubmitButton();
         if (!btn || btn.disabled) throw new Error("发送按钮不可用。");
@@ -527,44 +527,82 @@
           await sleep(12000);
       }
 
-      // 第二阶段
-      appendLog(">>> 第二阶段：串行下载原图 (含确认逻辑)...");
-      for (let index = 0; index < state.items.length; index += 1) {
-        if (!state.running) break;
-        const item = state.items[index];
-        if (item.status !== "generated") continue;
-
-        const fuzzy = item.prompt_en.trim().substring(0, 45);
-        const all = [...document.querySelectorAll('chat-step, [data-message-id], .conversation-container, .message-content')];
-        const msg = all.find(m => m.textContent.includes(fuzzy));
-        if (msg) {
-          const imgs = [...msg.querySelectorAll('img')].filter(img => {
-            const s = img.src || '';
-            const inCard = img.closest('.image-card-container') || img.closest('.attachment-container');
-            return (s.includes('googleusercontent.com') || s.startsWith('blob:')) && inCard;
-          });
-          
-          appendLog(`[任务 ${index + 1}] 提取到 ${imgs.length} 张图，开始同步下载...`);
-          for (let i = 0; i < imgs.length; i++) {
-            const filename = buildFilename(item, index, i);
-            const ok = await triggerGeminiDownload(imgs[i].closest('.image-card-container') || imgs[i], filename);
-            if (!ok) {
-              throw new Error(`第 ${index + 1} 个任务下载失败，已停止后续任务。`);
-            }
-          }
-          item.status = "done";
-          persistState(); render();
-        } else {
-          appendLog(`索引 ${index + 1}：跳过（未在历史中搜索到）。`);
-          item.status = "done";
-        }
-      }
+      await runDownloadOnlyQueue();
       appendLog("任务序列全部顺利完成！");
     } catch (e) {
       appendLog(`终止：${e.message}`);
     } finally {
       state.running = false; state.items = [];
       render(); persistState(); abortController = null;
+    }
+  }
+
+  async function runDownloadOnlyQueue() {
+    appendLog(">>> 第二阶段：串行下载原图 (含确认逻辑)...");
+    for (let index = 0; index < state.items.length; index += 1) {
+      if (!state.running) break;
+      const item = state.items[index];
+      if (item.status !== "generated") continue;
+
+      const fuzzy = item.prompt_en.trim().substring(0, 45);
+      const all = [...document.querySelectorAll('chat-step, [data-message-id], .conversation-container, .message-content')];
+      const msg = all.find(m => m.textContent.includes(fuzzy));
+      if (msg) {
+        const imgs = [...msg.querySelectorAll('img')].filter(img => {
+          const s = img.src || '';
+          const inCard = img.closest('.image-card-container') || img.closest('.attachment-container');
+          return (s.includes('googleusercontent.com') || s.startsWith('blob:')) && inCard;
+        });
+
+        appendLog(`[任务 ${index + 1}] 提取到 ${imgs.length} 张图，开始同步下载...`);
+        for (let i = 0; i < imgs.length; i++) {
+          const filename = buildFilename(item, index, i);
+          const ok = await triggerGeminiDownload(imgs[i].closest('.image-card-container') || imgs[i], filename);
+          if (!ok) {
+            throw new Error(`第 ${index + 1} 个任务下载失败，已停止后续任务。`);
+          }
+        }
+        item.status = "done";
+        persistState(); render();
+      } else {
+        appendLog(`索引 ${index + 1}：跳过（未在历史中搜索到）。`);
+        item.status = "done";
+      }
+    }
+  }
+
+  async function runDownloadOnly() {
+    if (!state.items.length) {
+      appendLog("队列为空。");
+      return;
+    }
+
+    if (state.running) return;
+
+    appendLog(">>> 开始仅下载模式 <<<");
+    abortController = new AbortController();
+    state.running = true;
+    render();
+    persistState();
+
+    try {
+      for (const item of state.items) {
+        if (item.status === "pending") {
+          item.status = "generated";
+        }
+      }
+      render();
+      persistState();
+
+      await runDownloadOnlyQueue();
+      appendLog("仅下载模式执行完成！");
+    } catch (e) {
+      appendLog(`终止：${e.message}`);
+    } finally {
+      state.running = false;
+      render();
+      persistState();
+      abortController = null;
     }
   }
 
@@ -625,6 +663,7 @@
           <button class="gbi-button" id="gbi-start-btn" ${state.running ? "disabled" : ""}>开始批量同步</button>
           <button class="gbi-button" id="gbi-stop-btn" data-variant="secondary" ${!state.running ? "disabled" : ""}>停止</button>
         </div>
+        <button class="gbi-button" id="gbi-download-only-btn" data-variant="secondary" ${state.running ? "disabled" : ""}>只执行下载</button>
         <button class="gbi-button" id="gbi-clear-btn" data-variant="secondary">一键清空队列</button>
         <div class="gbi-section">
           <label class="gbi-label">稳定执行日志</label>
@@ -653,12 +692,14 @@
     els.importBtn = root.querySelector("#gbi-import-btn");
     els.startBtn = root.querySelector("#gbi-start-btn");
     els.stopBtn = root.querySelector("#gbi-stop-btn");
+    els.downloadOnlyBtn = root.querySelector("#gbi-download-only-btn");
     els.clearBtn = root.querySelector("#gbi-clear-btn");
     els.toggleBtn = root.querySelector("#gbi-toggle-btn");
 
     els.importBtn.onclick = handleImport;
     els.startBtn.onclick = () => runQueue();
     els.stopBtn.onclick = () => { abortController?.abort(); state.running = false; render(); };
+    els.downloadOnlyBtn.onclick = () => runDownloadOnly();
     els.clearBtn.onclick = () => { state.items = []; persistState(); render(); };
     els.toggleBtn.onclick = () => { state.collapsed = !state.collapsed; render(); };
 
