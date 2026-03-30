@@ -26,7 +26,7 @@
   };
 
   const state = {
-    collapsed: false,
+    collapsed: true,
     running: false,
     items: [],
     logLines: ["准备就绪"],
@@ -56,7 +56,9 @@
   }
 
   function persistState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      settings: state.settings
+    }));
   }
 
   function findFirstElement(selectors) {
@@ -80,6 +82,13 @@
   }
 
   function clickElement(el) {
+    if (!el) return;
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    try { el.focus?.(); } catch (_) {}
+    try { el.click?.(); } catch (_) {}
+  }
+
+  async function humanClickElement(el) {
     if (!el) return;
     el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     const rect = el.getBoundingClientRect();
@@ -118,12 +127,35 @@
     });
 
     try { el.click?.(); } catch (_) {}
+    await sleep(120);
   }
 
-  async function humanClickElement(el) {
+  function movePointerAwayFromElement(el) {
     if (!el) return;
-    clickElement(el);
-    await sleep(120);
+    const body = document.body || document.documentElement;
+    const rect = el.getBoundingClientRect();
+    const clientX = Math.max(2, Math.min(window.innerWidth - 2, rect.left - 24));
+    const clientY = Math.max(2, Math.min(window.innerHeight - 2, rect.top - 24));
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 0
+    };
+
+    ["pointerout", "mouseout", "pointerleave", "mouseleave"].forEach((type) => {
+      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+      try { el.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
+    });
+
+    ["pointermove", "mousemove", "pointerover", "mouseover"].forEach((type) => {
+      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+      try { body.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
+    });
   }
 
   async function keyboardActivate(el) {
@@ -145,6 +177,59 @@
       }));
       await sleep(40);
     }
+  }
+
+  function getDirectDownloadButton(sourceEl) {
+    if (!sourceEl) return null;
+
+    const roots = [];
+    let current = sourceEl;
+    while (current && current !== document.body) {
+      roots.push(current);
+      current = current.parentElement;
+    }
+
+    for (const root of roots) {
+      for (const sel of SELECTOR_CANDIDATES.downloadAction) {
+        const btn = root.querySelector(sel);
+        if (btn) return btn;
+      }
+    }
+
+    return null;
+  }
+
+  function isElementVisible(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      style.opacity !== "0";
+  }
+
+  function isDownloadButtonActive(btn) {
+    if (!btn) return false;
+    return isElementVisible(btn) &&
+      !btn.disabled &&
+      btn.getAttribute("aria-disabled") !== "true";
+  }
+
+  async function waitForDownloadButtonToClear(sourceEl, timeoutMs = 30000) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const btn = getDirectDownloadButton(sourceEl);
+      if (!btn || !isDownloadButtonActive(btn)) {
+        return true;
+      }
+
+      await sleep(500);
+    }
+
+    throw new Error("下载按钮状态未变化，无法确认下载是否真正开始。");
   }
 
   function blobToDataUrl(blob) {
@@ -191,44 +276,56 @@
     });
   }
 
+  async function setNextDownloadFilename(filename) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          type: "SET_NEXT_DOWNLOAD",
+          filename
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+
+          if (!response?.ok) {
+            reject(new Error(response?.error || "下载文件名设置失败。"));
+            return;
+          }
+
+          resolve();
+        }
+      );
+    });
+  }
+
   async function triggerGeminiDownload(previewSource, filename) {
     try {
       appendLog(`[下载队列] 开始处理: ${filename}`);
-      await humanClickElement(previewSource);
-      await sleep(2000);
+      previewSource.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      await sleep(300);
 
-      const dialog = document.querySelector('mat-dialog-container');
-      if (!dialog) throw new Error("无法开启预览弹窗。");
+      const hoverTarget = previewSource.querySelector?.("img") || previewSource;
+      try { hoverTarget.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window })); } catch (_) {}
+      try { hoverTarget.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, view: window })); } catch (_) {}
+      await sleep(400);
 
-      const previewImage = [...dialog.querySelectorAll('img')]
-        .filter((img) => img.src && (img.src.startsWith('blob:') || img.src.includes('googleusercontent.com')))
-        .sort((left, right) => (right.naturalWidth * right.naturalHeight) - (left.naturalWidth * left.naturalHeight))[0];
-      if (!previewImage?.src) throw new Error("预览弹窗中未找到可下载图片。");
+      const btn = getDirectDownloadButton(previewSource);
+      if (!btn) throw new Error("未在图片卡片上找到“下载完整尺寸图片”按钮。");
 
-      let btn = null;
-      for (const sel of SELECTOR_CANDIDATES.downloadAction) {
-        btn = dialog.querySelector(sel);
-        if (btn) break;
-      }
+      appendLog("已定位到卡片下载按钮，直接触发原图下载。");
+      await setNextDownloadFilename(filename);
+      await humanClickElement(btn);
+      await sleep(250);
+      await keyboardActivate(btn);
+      movePointerAwayFromElement(btn);
+      movePointerAwayFromElement(previewSource);
+      appendLog("原图下载按钮已触发，等待按钮状态变化确认下载开始。");
+      await waitForDownloadButtonToClear(previewSource, 30000);
+      appendLog("下载已确认开始。");
 
-      if (btn) {
-        appendLog("已定位到原图下载按钮，尝试更真实的点击链路。");
-        await humanClickElement(btn);
-        await sleep(300);
-        await keyboardActivate(btn);
-        appendLog("原图下载按钮已触发。");
-      } else {
-        appendLog("未找到原图下载按钮，回退为扩展直下。");
-        const dataUrl = await fetchImageAsDataUrl(previewImage.src);
-        await downloadDataUrl(dataUrl, filename);
-        appendLog("下载任务已交给浏览器。");
-      }
-
-      const close = dialog.querySelector('button[mat-dialog-close], button[aria-label*="Close"], button[aria-label*="关闭"]');
-      if (close) await humanClickElement(close);
-      else { const b = document.querySelector('.cdk-overlay-backdrop'); if(b) b.click(); }
-      
-      await sleep(1000); // 缓冲
+      await sleep(500);
       return true;
     } catch (e) {
       appendLog(`下载异常：${e.message}`);
@@ -242,18 +339,9 @@
 
   async function waitForSendSync(oldStepCount, timeoutMs, signal) {
     const start = Date.now();
-    let lastRetry = Date.now();
     while (Date.now() - start < timeoutMs) {
       if (signal?.aborted) throw new Error("Aborted");
       if (getAllStepsCount() > oldStepCount) return true;
-      if (Date.now() - lastRetry > 8000) {
-        const input = findFirstElement(SELECTOR_CANDIDATES.promptInput);
-        if (input && (input.innerText || input.value || "").trim().length > 5) {
-            appendLog("检测到发送未生效，重试中...");
-            clickElement(getSubmitButton());
-        }
-        lastRetry = Date.now();
-      }
       await sleep(1500);
     }
     throw new Error("超时");
@@ -467,7 +555,12 @@
     els.startBtn.onclick = () => runQueue();
     els.stopBtn.onclick = () => { abortController?.abort(); state.running = false; render(); };
     els.clearBtn.onclick = () => { state.items = []; persistState(); render(); };
-    els.toggleBtn.onclick = () => { state.collapsed = !state.collapsed; persistState(); render(); };
+    els.toggleBtn.onclick = () => { state.collapsed = !state.collapsed; render(); };
+
+    const logsEl = root.querySelector("#gbi-logs");
+    if (logsEl) {
+      logsEl.scrollTop = logsEl.scrollHeight;
+    }
   }
 
   render();

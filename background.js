@@ -1,4 +1,20 @@
+let nextDownloadInfo = null;
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request?.type === "SET_NEXT_DOWNLOAD") {
+    if (!request.filename) {
+      sendResponse({ ok: false, error: "Missing filename." });
+      return false;
+    }
+
+    nextDownloadInfo = {
+      filename: request.filename,
+      timestamp: Date.now()
+    };
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (request?.type !== "DOWNLOAD_DATA_URL") {
     return false;
   }
@@ -27,4 +43,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   );
 
   return true;
+});
+
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  if (!nextDownloadInfo) {
+    suggest();
+    return;
+  }
+
+  if (Date.now() - nextDownloadInfo.timestamp > 30000) {
+    nextDownloadInfo = null;
+    suggest();
+    return;
+  }
+
+  suggest({
+    filename: nextDownloadInfo.filename,
+    conflictAction: "uniquify"
+  });
+  nextDownloadInfo = null;
 });
