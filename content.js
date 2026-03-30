@@ -370,6 +370,68 @@
     return document.querySelectorAll('chat-step, [data-message-id], .conversation-container').length;
   }
 
+  function findConversationContainerByPrompt(promptText, previousContainers = null) {
+    const fuzzy = String(promptText || "").trim().substring(0, 60);
+    if (!fuzzy) return null;
+    const containers = [...document.querySelectorAll('.conversation-container')];
+    const matches = containers.filter((container) => (container.textContent || "").includes(fuzzy));
+    if (!matches.length) return null;
+
+    if (previousContainers) {
+      const fresh = matches.filter((container) => !previousContainers.has(container));
+      if (fresh.length) return fresh[fresh.length - 1];
+    }
+
+    return matches[matches.length - 1];
+  }
+
+  function isGenerationStillProcessing(container) {
+    if (!container) return true;
+    const processingState = container.querySelector("processing-state");
+    const text = container.textContent || "";
+    return Boolean(
+      processingState ||
+      text.includes("Creating your image") ||
+      text.includes("创建您的图片") ||
+      text.includes("生成中")
+    );
+  }
+
+  function hasCompletedGeneratedImage(container) {
+    if (!container) return false;
+    const sourceEl =
+      container.querySelector(".image-card-container") ||
+      container.querySelector(".attachment-container") ||
+      container;
+    const img = sourceEl.querySelector('img.loaded, img[src^="blob:"], img[src*="googleusercontent.com"]');
+    const downloadBtn = getDirectDownloadButton(sourceEl);
+    const buttonReady = Boolean(
+      downloadBtn &&
+      !downloadBtn.disabled &&
+      downloadBtn.getAttribute("aria-disabled") !== "true" &&
+      !isDownloadSpinnerVisible(downloadBtn)
+    );
+    return Boolean(img && buttonReady && !isGenerationStillProcessing(container));
+  }
+
+  async function waitForPromptGenerationComplete(promptText, previousContainers, timeoutMs = 90000, signal) {
+    const startedAt = Date.now();
+    let targetContainer = null;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (signal?.aborted) throw new Error("Aborted");
+      if (!targetContainer) {
+        targetContainer = findConversationContainerByPrompt(promptText, previousContainers);
+      }
+      if (targetContainer && hasCompletedGeneratedImage(targetContainer)) {
+        return targetContainer;
+      }
+      await sleep(1500);
+    }
+
+    throw new Error("等待图片生成完成超时。");
+  }
+
   async function waitForSendSync(oldStepCount, timeoutMs, signal) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -426,28 +488,14 @@
         if (!btn || btn.disabled) throw new Error("发送按钮不可用。");
 
         const oldCount = getAllStepsCount();
+        const previousContainers = new Set(document.querySelectorAll('.conversation-container'));
         clickElement(btn);
         
         await waitForSendSync(oldCount, 45000, abortController.signal);
-        
-        // 阻塞等待生图完成
-        appendLog(`[任务 ${index + 1}] 正处于绘制阶段...`);
-        const startTime = Date.now();
-        while (Date.now() - startTime < 85000) {
-           if (abortController?.signal.aborted) break;
-           const all = [...document.querySelectorAll('chat-step, [data-message-id], .conversation-container')];
-           const container = all[all.length - 1];
-           const imgs = container ? container.querySelectorAll('img') : [];
-           const submitBtn = getSubmitButton();
-           const micBtn = document.querySelector('button[data-node-type="speech_dictation_mic_button"]');
-           const ready = (micBtn && micBtn.offsetParent !== null) || (submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true');
 
-           if (imgs.length > 0 && ready) {
-               appendLog(`[任务 ${index + 1}] 绘制完成。`);
-               break;
-           }
-           await sleep(2000);
-        }
+        appendLog(`[任务 ${index + 1}] 正处于绘制阶段...`);
+        await waitForPromptGenerationComplete(item.prompt_en, previousContainers, 90000, abortController.signal);
+        appendLog(`[任务 ${index + 1}] 绘制完成。`);
         item.status = "generated";
         persistState(); render();
         await sleep(3000); 
@@ -572,26 +620,13 @@
         if (!btn || btn.disabled) throw new Error("发送按钮不可用。");
 
         const oldCount = getAllStepsCount();
+        const previousContainers = new Set(document.querySelectorAll('.conversation-container'));
         clickElement(btn);
         await waitForSendSync(oldCount, 45000, abortController.signal);
 
         appendLog(`[任务 ${index + 1}] 正处于绘制阶段...`);
-        const startTime = Date.now();
-        while (Date.now() - startTime < 85000) {
-          if (abortController?.signal.aborted) break;
-          const all = [...document.querySelectorAll('chat-step, [data-message-id], .conversation-container')];
-          const container = all[all.length - 1];
-          const imgs = container ? container.querySelectorAll('img') : [];
-          const submitBtn = getSubmitButton();
-          const micBtn = document.querySelector('button[data-node-type="speech_dictation_mic_button"]');
-          const ready = (micBtn && micBtn.offsetParent !== null) || (submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true');
-
-          if (imgs.length > 0 && ready) {
-            appendLog(`[任务 ${index + 1}] 绘制完成。`);
-            break;
-          }
-          await sleep(2000);
-        }
+        await waitForPromptGenerationComplete(item.prompt_en, previousContainers, 90000, abortController.signal);
+        appendLog(`[任务 ${index + 1}] 绘制完成。`);
 
         item.status = "generated";
         persistState();
