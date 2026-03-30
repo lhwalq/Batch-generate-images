@@ -80,6 +80,10 @@
     }));
   }
 
+  function clearResumeState() {
+    localStorage.removeItem(RESUME_KEY);
+  }
+
   function findFirstElement(selectors) {
     for (const sel of selectors) {
       const el = document.querySelector(sel);
@@ -94,6 +98,13 @@
       if (input) return input;
       await sleep(1000);
     }
+  }
+
+  function findMessageByPrompt(promptText) {
+    const fuzzy = String(promptText || "").trim().substring(0, 45);
+    if (!fuzzy) return null;
+    const all = [...document.querySelectorAll('chat-step, [data-message-id], .conversation-container, .message-content')];
+    return all.find((m) => (m.textContent || "").includes(fuzzy)) || null;
   }
 
   function getSubmitButton() {
@@ -134,12 +145,6 @@
     });
   }
 
-  async function humanClickElement(el) {
-    if (!el) return;
-    clickElement(el);
-    await sleep(120);
-  }
-
   function movePointerAwayFromElement(el) {
     if (!el) return;
     const body = document.body || document.documentElement;
@@ -166,52 +171,6 @@
       const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
       try { body.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
     });
-  }
-
-  async function clickBlankArea() {
-    const body = document.body || document.documentElement;
-    const clientX = Math.max(8, Math.floor(window.innerWidth * 0.08));
-    const clientY = Math.max(8, Math.floor(window.innerHeight * 0.12));
-    const base = {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      view: window,
-      clientX,
-      clientY,
-      button: 0,
-      buttons: 0
-    };
-
-    ["pointermove", "mousemove", "pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach((type) => {
-      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
-      try { body.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
-    });
-    await sleep(120);
-  }
-
-  async function hoverElement(el) {
-    if (!el) return;
-    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-    const rect = el.getBoundingClientRect();
-    const clientX = rect.left + Math.max(2, Math.min(rect.width / 2, rect.width - 2));
-    const clientY = rect.top + Math.max(2, Math.min(rect.height / 2, rect.height - 2));
-    const base = {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      view: window,
-      clientX,
-      clientY,
-      button: 0,
-      buttons: 0
-    };
-
-    ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"].forEach((type) => {
-      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
-      try { el.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
-    });
-    await sleep(120);
   }
 
   function getDirectDownloadButton(sourceEl) {
@@ -356,51 +315,54 @@
   async function triggerGeminiDownload(previewSource, filename) {
     try {
       appendLog(`[下载队列] 开始处理: ${filename}`);
+      clearActiveDownloadTarget();
       previewSource.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
-      appendLog("已滚动到当前图片位置。");
-      await sleep(900);
-
-      const hoverTarget = previewSource.querySelector?.("img") || previewSource;
-      try { hoverTarget.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window })); } catch (_) {}
-      try { hoverTarget.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, view: window })); } catch (_) {}
+      markActiveDownloadTarget(previewSource);
+      appendLog("已滚动到当前图片位置并高亮目标图片。");
+      appendLog("请把鼠标真实移到这张图片上，等待下载按钮出现后手动点击下载。");
       await sleep(600);
 
-      const btn = getDirectDownloadButton(previewSource);
-      if (!btn) throw new Error("未在图片卡片上找到“下载完整尺寸图片”按钮。");
-
-      appendLog("已定位到卡片下载按钮，准备触发原图下载。");
       const baselineIds = await getDownloadBaseline();
-      const clickStartedAt = Date.now();
       await setNextDownloadFilename(filename);
-      await humanClickElement(btn);
-      await sleep(250);
-      movePointerAwayFromElement(btn);
-      movePointerAwayFromElement(previewSource);
-      await clickBlankArea();
-      appendLog("原图下载按钮已触发，已点击空白处，等待下载完成。");
+      const clickStartedAt = Date.now();
+      appendLog("等待你手动触发下载...");
 
       try {
-        await waitForDownloadSpinnerStart(previewSource, 12000);
+        await waitForDownloadSpinnerStart(previewSource, 60000);
         appendLog("检测到下载转圈状态，等待该下载完成。");
         await waitForDownloadSpinnerFinish(previewSource, 90000);
         appendLog("下载转圈状态已结束。");
       } catch (spinnerError) {
-        const started = await waitForDownloadStart(clickStartedAt, baselineIds, 5000);
+        const started = await waitForDownloadStart(clickStartedAt, baselineIds, 60000);
         appendLog("检测到浏览器新下载任务，等待该下载完成。");
         await waitForDownloadCompleteById(started.downloadId, 90000);
         appendLog("浏览器已确认该图片下载完成。");
       }
 
-      await sleep(1800);
-      appendLog("等待 5 秒后再处理下一张下载。");
-      await sleep(5000);
+      appendLog("当前图片下载完成，可以继续下一张。");
+      clearActiveDownloadTarget();
+      await sleep(800);
       return true;
     } catch (e) {
+      clearActiveDownloadTarget();
       appendLog(`下载异常：${e.message}`);
       if (String(e.message || "").includes("Extension context invalidated")) {
         appendLog("扩展上下文已失效，请重新加载扩展后刷新 Gemini 页面再试。");
       }
       return false;
+    }
+  }
+
+  function clearActiveDownloadTarget() {
+    document.querySelectorAll(".gbi-download-target").forEach((el) => el.classList.remove("gbi-download-target"));
+  }
+
+  function markActiveDownloadTarget(previewSource) {
+    const target = previewSource?.closest?.(".image-card-container")
+      || previewSource?.closest?.(".attachment-container")
+      || previewSource;
+    if (target) {
+      target.classList.add("gbi-download-target");
     }
   }
 
@@ -501,21 +463,23 @@
     } catch (e) {
       appendLog(`终止：${e.message}`);
     } finally {
-      state.running = false; state.items = [];
-      render(); persistState(); abortController = null;
+      clearResumeState();
+      state.running = false;
+      state.items = [];
+      render();
+      persistState();
+      abortController = null;
     }
   }
 
-  async function runDownloadOnlyQueue() {
+  async function runDownloadOnlyQueue(startItemIndex = 0, startImageIndex = 0) {
     appendLog(">>> 第二阶段：串行下载原图 (含确认逻辑)...");
-    for (let index = 0; index < state.items.length; index += 1) {
+    for (let index = startItemIndex; index < state.items.length; index += 1) {
       if (!state.running) break;
       const item = state.items[index];
       if (item.status !== "generated") continue;
 
-      const fuzzy = item.prompt_en.trim().substring(0, 45);
-      const all = [...document.querySelectorAll('chat-step, [data-message-id], .conversation-container, .message-content')];
-      const msg = all.find(m => m.textContent.includes(fuzzy));
+      const msg = findMessageByPrompt(item.prompt_en);
       if (msg) {
         const imgs = [...msg.querySelectorAll('img')].filter(img => {
           const s = img.src || '';
@@ -524,12 +488,14 @@
         });
 
         appendLog(`[任务 ${index + 1}] 提取到 ${imgs.length} 张图，开始同步下载...`);
-        for (let i = 0; i < imgs.length; i++) {
+        const imageStartIndex = index === startItemIndex ? startImageIndex : 0;
+        for (let i = imageStartIndex; i < imgs.length; i++) {
           const filename = buildFilename(item, index, i);
           const ok = await triggerGeminiDownload(imgs[i].closest('.image-card-container') || imgs[i], filename);
           if (!ok) {
             throw new Error(`第 ${index + 1} 个任务下载失败，已停止后续任务。`);
           }
+
         }
         item.status = "done";
         persistState(); render();
@@ -568,6 +534,76 @@
     } catch (e) {
       appendLog(`终止：${e.message}`);
     } finally {
+      clearResumeState();
+      state.running = false;
+      render();
+      persistState();
+      abortController = null;
+    }
+  }
+
+  async function runGenerateOnly() {
+    if (!state.items.length) {
+      appendLog("队列为空。");
+      return;
+    }
+
+    if (state.running) return;
+
+    appendLog(">>> 开始仅生成模式 <<<");
+    abortController = new AbortController();
+    state.running = true;
+    render();
+    persistState();
+
+    try {
+      await waitForGeminiReady();
+
+      for (let index = 0; index < state.items.length; index += 1) {
+        if (!state.running) break;
+        const item = state.items[index];
+        if (item.status === "done" || item.status === "generated") continue;
+
+        appendLog(`[生图 ${index + 1}/${state.items.length}] 正在启动...`);
+        await setPromptValue(item.prompt_en);
+        await sleep(3000);
+
+        const btn = getSubmitButton();
+        if (!btn || btn.disabled) throw new Error("发送按钮不可用。");
+
+        const oldCount = getAllStepsCount();
+        clickElement(btn);
+        await waitForSendSync(oldCount, 45000, abortController.signal);
+
+        appendLog(`[任务 ${index + 1}] 正处于绘制阶段...`);
+        const startTime = Date.now();
+        while (Date.now() - startTime < 85000) {
+          if (abortController?.signal.aborted) break;
+          const all = [...document.querySelectorAll('chat-step, [data-message-id], .conversation-container')];
+          const container = all[all.length - 1];
+          const imgs = container ? container.querySelectorAll('img') : [];
+          const submitBtn = getSubmitButton();
+          const micBtn = document.querySelector('button[data-node-type="speech_dictation_mic_button"]');
+          const ready = (micBtn && micBtn.offsetParent !== null) || (submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true');
+
+          if (imgs.length > 0 && ready) {
+            appendLog(`[任务 ${index + 1}] 绘制完成。`);
+            break;
+          }
+          await sleep(2000);
+        }
+
+        item.status = "generated";
+        persistState();
+        render();
+        await sleep(3000);
+      }
+
+      appendLog("仅生成模式执行完成！");
+    } catch (e) {
+      appendLog(`终止：${e.message}`);
+    } finally {
+      clearResumeState();
       state.running = false;
       render();
       persistState();
@@ -632,6 +668,7 @@
           <button class="gbi-button" id="gbi-start-btn" ${state.running ? "disabled" : ""}>开始批量同步</button>
           <button class="gbi-button" id="gbi-stop-btn" data-variant="secondary" ${!state.running ? "disabled" : ""}>停止</button>
         </div>
+        <button class="gbi-button" id="gbi-generate-only-btn" data-variant="secondary" ${state.running ? "disabled" : ""}>只执行生成</button>
         <button class="gbi-button" id="gbi-download-only-btn" data-variant="secondary" ${state.running ? "disabled" : ""}>只执行下载</button>
         <button class="gbi-button" id="gbi-clear-btn" data-variant="secondary">一键清空队列</button>
         <div class="gbi-section">
@@ -661,15 +698,27 @@
     els.importBtn = root.querySelector("#gbi-import-btn");
     els.startBtn = root.querySelector("#gbi-start-btn");
     els.stopBtn = root.querySelector("#gbi-stop-btn");
+    els.generateOnlyBtn = root.querySelector("#gbi-generate-only-btn");
     els.downloadOnlyBtn = root.querySelector("#gbi-download-only-btn");
     els.clearBtn = root.querySelector("#gbi-clear-btn");
     els.toggleBtn = root.querySelector("#gbi-toggle-btn");
 
     els.importBtn.onclick = handleImport;
     els.startBtn.onclick = () => runQueue();
-    els.stopBtn.onclick = () => { abortController?.abort(); state.running = false; render(); };
+    els.stopBtn.onclick = () => {
+      clearResumeState();
+      abortController?.abort();
+      state.running = false;
+      render();
+    };
+    els.generateOnlyBtn.onclick = () => runGenerateOnly();
     els.downloadOnlyBtn.onclick = () => runDownloadOnly();
-    els.clearBtn.onclick = () => { state.items = []; persistState(); render(); };
+    els.clearBtn.onclick = () => {
+      clearResumeState();
+      state.items = [];
+      persistState();
+      render();
+    };
     els.toggleBtn.onclick = () => { state.collapsed = !state.collapsed; render(); };
 
     const logsEl = root.querySelector("#gbi-logs");

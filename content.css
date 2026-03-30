@@ -199,3 +199,21 @@
   font-size: 11px;
   opacity: 0.75;
 }
+
+.gbi-download-target {
+  position: relative;
+  outline: 3px solid #ffd24d !important;
+  outline-offset: 4px;
+  border-radius: 14px;
+  box-shadow: 0 0 0 8px rgba(255, 210, 77, 0.18), 0 0 28px rgba(255, 210, 77, 0.35);
+  animation: gbiPulseTarget 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes gbiPulseTarget {
+  from {
+    box-shadow: 0 0 0 6px rgba(255, 210, 77, 0.14), 0 0 20px rgba(255, 210, 77, 0.28);
+  }
+  to {
+    box-shadow: 0 0 0 10px rgba(255, 210, 77, 0.2), 0 0 34px rgba(255, 210, 77, 0.4);
+  }
+}
