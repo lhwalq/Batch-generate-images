@@ -55,6 +55,25 @@
     render();
   }
 
+  function ensureExtensionContext() {
+    if (typeof chrome === "undefined" || !chrome?.runtime?.id || typeof chrome.runtime.sendMessage !== "function") {
+      throw new Error("扩展上下文已失效，请重新加载扩展并刷新 Gemini 页面。");
+    }
+  }
+
+  async function sendRuntimeMessageSafe(payload) {
+    ensureExtensionContext();
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(payload, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(response);
+      });
+    });
+  }
+
   function persistState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       settings: state.settings
@@ -158,6 +177,28 @@
     });
   }
 
+  async function clickBlankArea() {
+    const body = document.body || document.documentElement;
+    const clientX = Math.max(8, Math.floor(window.innerWidth * 0.08));
+    const clientY = Math.max(8, Math.floor(window.innerHeight * 0.12));
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 0
+    };
+
+    ["pointermove", "mousemove", "pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach((type) => {
+      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+      try { body.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
+    });
+    await sleep(120);
+  }
+
   async function keyboardActivate(el) {
     if (!el) return;
     try { el.focus?.(); } catch (_) {}
@@ -177,6 +218,30 @@
       }));
       await sleep(40);
     }
+  }
+
+  async function hoverElement(el) {
+    if (!el) return;
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    const rect = el.getBoundingClientRect();
+    const clientX = rect.left + Math.max(2, Math.min(rect.width / 2, rect.width - 2));
+    const clientY = rect.top + Math.max(2, Math.min(rect.height / 2, rect.height - 2));
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 0
+    };
+
+    ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"].forEach((type) => {
+      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+      try { el.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
+    });
+    await sleep(120);
   }
 
   function getDirectDownloadButton(sourceEl) {
@@ -199,37 +264,82 @@
     return null;
   }
 
-  function isElementVisible(el) {
-    if (!el) return false;
-    const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    return rect.width > 0 &&
-      rect.height > 0 &&
-      style.display !== "none" &&
-      style.visibility !== "hidden" &&
-      style.opacity !== "0";
+  async function getDownloadBaseline() {
+    const response = await sendRuntimeMessageSafe({ type: "GET_DOWNLOAD_BASELINE" });
+    if (!response?.ok) {
+      throw new Error(response?.error || "无法读取下载基线");
+    }
+    return Array.isArray(response.downloadIds) ? response.downloadIds : [];
   }
 
-  function isDownloadButtonActive(btn) {
+  async function waitForDownloadStart(afterTs, baselineIds, timeoutMs = 8000) {
+    const response = await sendRuntimeMessageSafe({
+      type: "WAIT_FOR_NEW_DOWNLOAD_START",
+      afterTs,
+      timeoutMs,
+      baselineIds
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "下载未开始");
+    }
+    return response;
+  }
+
+  async function waitForDownloadCompleteById(downloadId, timeoutMs = 90000) {
+    const response = await sendRuntimeMessageSafe({
+      type: "WAIT_FOR_DOWNLOAD_COMPLETE_BY_ID",
+      downloadId,
+      timeoutMs
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "下载未完成");
+    }
+    return response;
+  }
+
+  function isDownloadSpinnerVisible(btn) {
     if (!btn) return false;
-    return isElementVisible(btn) &&
-      !btn.disabled &&
-      btn.getAttribute("aria-disabled") !== "true";
+    return Boolean(
+      btn.classList?.contains("active") ||
+      btn.querySelector('[data-test-id="download-spinner"]')
+    );
   }
 
-  async function waitForDownloadButtonToClear(sourceEl, timeoutMs = 30000) {
+  async function waitForDownloadSpinnerStart(sourceEl, timeoutMs = 12000) {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
       const btn = getDirectDownloadButton(sourceEl);
-      if (!btn || !isDownloadButtonActive(btn)) {
+      if (isDownloadSpinnerVisible(btn)) {
+        return btn;
+      }
+      await sleep(300);
+    }
+
+    throw new Error("下载按钮没有进入转圈状态。");
+  }
+
+  async function waitForDownloadSpinnerFinish(sourceEl, timeoutMs = 90000) {
+    const startedAt = Date.now();
+    let spinnerSeen = false;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const btn = getDirectDownloadButton(sourceEl);
+      const spinning = isDownloadSpinnerVisible(btn);
+
+      if (spinning) {
+        spinnerSeen = true;
+      }
+
+      if (spinnerSeen && !spinning) {
+        await sleep(1200);
         return true;
       }
 
       await sleep(500);
     }
 
-    throw new Error("下载按钮状态未变化，无法确认下载是否真正开始。");
+    throw new Error("下载转圈状态长时间未结束。");
   }
 
   function blobToDataUrl(blob) {
@@ -252,83 +362,75 @@
   }
 
   async function downloadDataUrl(dataUrl, filename) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        {
-          type: "DOWNLOAD_DATA_URL",
-          dataUrl,
-          filename
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-
-          if (!response?.ok) {
-            reject(new Error(response?.error || "下载启动失败。"));
-            return;
-          }
-
-          resolve(response.downloadId);
-        }
-      );
+    const response = await sendRuntimeMessageSafe({
+      type: "DOWNLOAD_DATA_URL",
+      dataUrl,
+      filename
     });
+    if (!response?.ok) {
+      throw new Error(response?.error || "下载启动失败。");
+    }
+    return response.downloadId;
   }
 
   async function setNextDownloadFilename(filename) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        {
-          type: "SET_NEXT_DOWNLOAD",
-          filename
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-
-          if (!response?.ok) {
-            reject(new Error(response?.error || "下载文件名设置失败。"));
-            return;
-          }
-
-          resolve();
-        }
-      );
+    const response = await sendRuntimeMessageSafe({
+      type: "SET_NEXT_DOWNLOAD",
+      filename
     });
+    if (!response?.ok) {
+      throw new Error(response?.error || "下载文件名设置失败。");
+    }
   }
 
   async function triggerGeminiDownload(previewSource, filename) {
     try {
       appendLog(`[下载队列] 开始处理: ${filename}`);
-      previewSource.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-      await sleep(300);
+      previewSource.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+      appendLog("已滚动到当前图片位置。");
+      await sleep(900);
 
       const hoverTarget = previewSource.querySelector?.("img") || previewSource;
       try { hoverTarget.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true, cancelable: true, view: window })); } catch (_) {}
       try { hoverTarget.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, view: window })); } catch (_) {}
-      await sleep(400);
+      await sleep(600);
 
       const btn = getDirectDownloadButton(previewSource);
       if (!btn) throw new Error("未在图片卡片上找到“下载完整尺寸图片”按钮。");
 
-      appendLog("已定位到卡片下载按钮，直接触发原图下载。");
+      appendLog("已定位到卡片下载按钮，准备触发原图下载。");
+      const baselineIds = await getDownloadBaseline();
+      const clickStartedAt = Date.now();
       await setNextDownloadFilename(filename);
       await humanClickElement(btn);
       await sleep(250);
       await keyboardActivate(btn);
       movePointerAwayFromElement(btn);
       movePointerAwayFromElement(previewSource);
-      appendLog("原图下载按钮已触发，等待按钮状态变化确认下载开始。");
-      await waitForDownloadButtonToClear(previewSource, 30000);
-      appendLog("下载已确认开始。");
+      await clickBlankArea();
+      appendLog("原图下载按钮已触发，已点击空白处，等待下载完成。");
 
-      await sleep(500);
+      try {
+        await waitForDownloadSpinnerStart(previewSource, 12000);
+        appendLog("检测到下载转圈状态，等待该下载完成。");
+        await waitForDownloadSpinnerFinish(previewSource, 90000);
+        appendLog("下载转圈状态已结束。");
+      } catch (spinnerError) {
+        const started = await waitForDownloadStart(clickStartedAt, baselineIds, 10000);
+        appendLog("检测到浏览器新下载任务，等待该下载完成。");
+        await waitForDownloadCompleteById(started.downloadId, 90000);
+        appendLog("浏览器已确认该图片下载完成。");
+      }
+
+      await sleep(1800);
+      appendLog("等待 5 秒后再处理下一张下载。");
+      await sleep(5000);
       return true;
     } catch (e) {
       appendLog(`下载异常：${e.message}`);
+      if (String(e.message || "").includes("Extension context invalidated")) {
+        appendLog("扩展上下文已失效，请重新加载扩展后刷新 Gemini 页面再试。");
+      }
       return false;
     }
   }
@@ -445,7 +547,10 @@
           appendLog(`[任务 ${index + 1}] 提取到 ${imgs.length} 张图，开始同步下载...`);
           for (let i = 0; i < imgs.length; i++) {
             const filename = buildFilename(item, index, i);
-            await triggerGeminiDownload(imgs[i].closest('.image-card-container') || imgs[i], filename);
+            const ok = await triggerGeminiDownload(imgs[i].closest('.image-card-container') || imgs[i], filename);
+            if (!ok) {
+              throw new Error(`第 ${index + 1} 个任务下载失败，已停止后续任务。`);
+            }
           }
           item.status = "done";
           persistState(); render();
