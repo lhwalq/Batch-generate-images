@@ -104,12 +104,6 @@
     if (!el) return;
     el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     try { el.focus?.(); } catch (_) {}
-    try { el.click?.(); } catch (_) {}
-  }
-
-  async function humanClickElement(el) {
-    if (!el) return;
-    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     const rect = el.getBoundingClientRect();
     const clientX = rect.left + Math.max(2, Math.min(rect.width / 2, rect.width - 2));
     const clientY = rect.top + Math.max(2, Math.min(rect.height / 2, rect.height - 2));
@@ -124,28 +118,25 @@
       buttons: 1
     };
 
-    try { el.focus?.(); } catch (_) {}
-
-    const hoverTypes = ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"];
-    const pressTypes = ["pointerdown", "mousedown"];
-    const releaseTypes = ["pointerup", "mouseup", "click"];
-
-    hoverTypes.forEach((type) => {
+    ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"].forEach((type) => {
       const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
-      el.dispatchEvent(new EventCtor(type, { ...base, buttons: 0 }));
+      try { el.dispatchEvent(new EventCtor(type, { ...base, buttons: 0 })); } catch (_) {}
     });
 
-    pressTypes.forEach((type) => {
+    ["pointerdown", "mousedown"].forEach((type) => {
       const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
-      el.dispatchEvent(new EventCtor(type, base));
+      try { el.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
     });
 
-    releaseTypes.forEach((type) => {
+    ["pointerup", "mouseup", "click"].forEach((type) => {
       const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
-      el.dispatchEvent(new EventCtor(type, { ...base, buttons: 0 }));
+      try { el.dispatchEvent(new EventCtor(type, { ...base, buttons: 0 })); } catch (_) {}
     });
+  }
 
-    try { el.click?.(); } catch (_) {}
+  async function humanClickElement(el) {
+    if (!el) return;
+    clickElement(el);
     await sleep(120);
   }
 
@@ -197,27 +188,6 @@
       try { body.dispatchEvent(new EventCtor(type, base)); } catch (_) {}
     });
     await sleep(120);
-  }
-
-  async function keyboardActivate(el) {
-    if (!el) return;
-    try { el.focus?.(); } catch (_) {}
-    const keyEvents = [
-      ["keydown", "Enter"],
-      ["keyup", "Enter"],
-      ["keydown", " "],
-      ["keyup", " "]
-    ];
-    for (const [type, key] of keyEvents) {
-      el.dispatchEvent(new KeyboardEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        key,
-        code: key === "Enter" ? "Enter" : "Space",
-      }));
-      await sleep(40);
-    }
   }
 
   async function hoverElement(el) {
@@ -404,7 +374,6 @@
       await setNextDownloadFilename(filename);
       await humanClickElement(btn);
       await sleep(250);
-      await keyboardActivate(btn);
       movePointerAwayFromElement(btn);
       movePointerAwayFromElement(previewSource);
       await clickBlankArea();
@@ -423,7 +392,7 @@
       }
 
       await sleep(1800);
-      appendLog("等待 10 秒后再处理下一张下载。");
+      appendLog("等待 5 秒后再处理下一张下载。");
       await sleep(5000);
       return true;
     } catch (e) {
