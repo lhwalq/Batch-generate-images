@@ -34,18 +34,8 @@
     lastJsonText: ""
   };
 
-  let root, els = {}, abortController = null, downloadResolver = null;
+  let root, els = {}, abortController = null;
   const sleep = (ms) => new Promise(res => setTimeout(res, ms));
-
-  // 监听后台的下载完成信号
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === "DOWNLOAD_FINISHED") {
-       if (downloadResolver) {
-           downloadResolver();
-           downloadResolver = null;
-       }
-    }
-  });
 
   function sanitizeFilenamePart(value, fallback = "item") {
     return String(value ?? "").trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "_").slice(0, 80) || fallback;
@@ -97,6 +87,50 @@
     });
   }
 
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("图片转 data URL 失败。"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function fetchImageAsDataUrl(src) {
+    const response = await fetch(src, { credentials: "include" });
+    if (!response.ok) {
+      throw new Error(`图片请求失败：${response.status}`);
+    }
+
+    const blob = await response.blob();
+    return blobToDataUrl(blob);
+  }
+
+  async function downloadDataUrl(dataUrl, filename) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          type: "DOWNLOAD_DATA_URL",
+          dataUrl,
+          filename
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+
+          if (!response?.ok) {
+            reject(new Error(response?.error || "下载启动失败。"));
+            return;
+          }
+
+          resolve(response.downloadId);
+        }
+      );
+    });
+  }
+
   async function triggerGeminiDownload(previewSource, filename) {
     try {
       appendLog(`[下载队列] 开始处理: ${filename}`);
@@ -106,29 +140,15 @@
       const dialog = document.querySelector('mat-dialog-container');
       if (!dialog) throw new Error("无法开启预览弹窗。");
 
-      let btn = null;
-      for (const sel of SELECTOR_CANDIDATES.downloadAction) {
-        btn = dialog.querySelector(sel);
-        if (btn) break;
-      }
-      if (!btn) throw new Error("未检测到下载按钮。");
+      const previewImage = [...dialog.querySelectorAll('img')]
+        .filter((img) => img.src && (img.src.startsWith('blob:') || img.src.includes('googleusercontent.com')))
+        .sort((left, right) => (right.naturalWidth * right.naturalHeight) - (left.naturalWidth * left.naturalHeight))[0];
+      if (!previewImage?.src) throw new Error("预览弹窗中未找到可下载图片。");
 
-      // 关键：在点击前锁定后台文件名
-      await chrome.runtime.sendMessage({ type: "SET_NEXT_DOWNLOAD", filename: filename });
-
-      // 准备好一个 Promise，等待后台通知下载完成
-      const downloadDone = new Promise((resolve) => {
-          downloadResolver = resolve;
-          // 设置一个 15s 的保险超时，由于网络问题可能导致信号丢失
-          setTimeout(resolve, 15000);
-      });
-
-      clickElement(btn);
-      appendLog("正在下载中，请勿进行其他操作...");
-      
-      // 真正阻塞等待：直到文件落盘才进行下一步
-      await downloadDone;
-      appendLog("下载成功，准备关闭预览。");
+      appendLog("已拿到图片资源，开始直接下载。");
+      const dataUrl = await fetchImageAsDataUrl(previewImage.src);
+      await downloadDataUrl(dataUrl, filename);
+      appendLog("下载任务已交给浏览器。");
 
       const close = dialog.querySelector('button[mat-dialog-close], button[aria-label*="Close"], button[aria-label*="关闭"]');
       if (close) clickElement(close);
@@ -371,7 +391,7 @@
 
     els.importBtn.onclick = handleImport;
     els.startBtn.onclick = () => runQueue();
-    els.stopBtn.onclick = () => { abortController?.abort(); if(downloadResolver) downloadResolver(); state.running = false; render(); };
+    els.stopBtn.onclick = () => { abortController?.abort(); state.running = false; render(); };
     els.clearBtn.onclick = () => { state.items = []; persistState(); render(); };
     els.toggleBtn.onclick = () => { state.collapsed = !state.collapsed; persistState(); render(); };
   }
