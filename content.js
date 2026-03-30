@@ -81,10 +81,70 @@
 
   function clickElement(el) {
     if (!el) return;
-    el.scrollIntoView({ block: "center" });
-    ["mousedown", "click", "mouseup"].forEach(type => {
-        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    const rect = el.getBoundingClientRect();
+    const clientX = rect.left + Math.max(2, Math.min(rect.width / 2, rect.width - 2));
+    const clientY = rect.top + Math.max(2, Math.min(rect.height / 2, rect.height - 2));
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+      buttons: 1
+    };
+
+    try { el.focus?.(); } catch (_) {}
+
+    const hoverTypes = ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"];
+    const pressTypes = ["pointerdown", "mousedown"];
+    const releaseTypes = ["pointerup", "mouseup", "click"];
+
+    hoverTypes.forEach((type) => {
+      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new EventCtor(type, { ...base, buttons: 0 }));
     });
+
+    pressTypes.forEach((type) => {
+      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new EventCtor(type, base));
+    });
+
+    releaseTypes.forEach((type) => {
+      const EventCtor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new EventCtor(type, { ...base, buttons: 0 }));
+    });
+
+    try { el.click?.(); } catch (_) {}
+  }
+
+  async function humanClickElement(el) {
+    if (!el) return;
+    clickElement(el);
+    await sleep(120);
+  }
+
+  async function keyboardActivate(el) {
+    if (!el) return;
+    try { el.focus?.(); } catch (_) {}
+    const keyEvents = [
+      ["keydown", "Enter"],
+      ["keyup", "Enter"],
+      ["keydown", " "],
+      ["keyup", " "]
+    ];
+    for (const [type, key] of keyEvents) {
+      el.dispatchEvent(new KeyboardEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        key,
+        code: key === "Enter" ? "Enter" : "Space",
+      }));
+      await sleep(40);
+    }
   }
 
   function blobToDataUrl(blob) {
@@ -134,7 +194,7 @@
   async function triggerGeminiDownload(previewSource, filename) {
     try {
       appendLog(`[下载队列] 开始处理: ${filename}`);
-      clickElement(previewSource);
+      await humanClickElement(previewSource);
       await sleep(2000);
 
       const dialog = document.querySelector('mat-dialog-container');
@@ -145,13 +205,27 @@
         .sort((left, right) => (right.naturalWidth * right.naturalHeight) - (left.naturalWidth * left.naturalHeight))[0];
       if (!previewImage?.src) throw new Error("预览弹窗中未找到可下载图片。");
 
-      appendLog("已拿到图片资源，开始直接下载。");
-      const dataUrl = await fetchImageAsDataUrl(previewImage.src);
-      await downloadDataUrl(dataUrl, filename);
-      appendLog("下载任务已交给浏览器。");
+      let btn = null;
+      for (const sel of SELECTOR_CANDIDATES.downloadAction) {
+        btn = dialog.querySelector(sel);
+        if (btn) break;
+      }
+
+      if (btn) {
+        appendLog("已定位到原图下载按钮，尝试更真实的点击链路。");
+        await humanClickElement(btn);
+        await sleep(300);
+        await keyboardActivate(btn);
+        appendLog("原图下载按钮已触发。");
+      } else {
+        appendLog("未找到原图下载按钮，回退为扩展直下。");
+        const dataUrl = await fetchImageAsDataUrl(previewImage.src);
+        await downloadDataUrl(dataUrl, filename);
+        appendLog("下载任务已交给浏览器。");
+      }
 
       const close = dialog.querySelector('button[mat-dialog-close], button[aria-label*="Close"], button[aria-label*="关闭"]');
-      if (close) clickElement(close);
+      if (close) await humanClickElement(close);
       else { const b = document.querySelector('.cdk-overlay-backdrop'); if(b) b.click(); }
       
       await sleep(1000); // 缓冲
