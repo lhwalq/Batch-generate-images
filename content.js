@@ -111,6 +111,40 @@
     return findFirstElement(SELECTOR_CANDIDATES.submitButton);
   }
 
+  function getVoiceButton() {
+    return document.querySelector('button[data-node-type="speech_dictation_mic_button"], button[aria-label*="语音"], button[aria-label*="Voice"], button[aria-label*="麦克风"]');
+  }
+
+  function isElementVisible(el) {
+    return Boolean(el && el.isConnected && el.offsetParent !== null);
+  }
+
+  function isButtonActuallyEnabled(el) {
+    return Boolean(
+      el &&
+      isElementVisible(el) &&
+      !el.disabled &&
+      el.getAttribute("aria-disabled") !== "true"
+    );
+  }
+
+  function getComposerState() {
+    const submitBtn = getSubmitButton();
+    const voiceBtn = getVoiceButton();
+    const sendDisabled = Boolean(
+      submitBtn &&
+      isElementVisible(submitBtn) &&
+      (submitBtn.disabled || submitBtn.getAttribute("aria-disabled") === "true")
+    );
+    return {
+      submitBtn,
+      voiceBtn,
+      hasSendButton: isButtonActuallyEnabled(submitBtn),
+      hasVoiceButton: isButtonActuallyEnabled(voiceBtn),
+      sendDisabled
+    };
+  }
+
   function clickElement(el) {
     if (!el) return;
     el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
@@ -370,31 +404,49 @@
     return document.querySelectorAll('chat-step, [data-message-id], .conversation-container').length;
   }
 
-  function findConversationContainerByPrompt(promptText, previousContainers = null) {
-    const fuzzy = String(promptText || "").trim().substring(0, 60);
-    if (!fuzzy) return null;
+  function findLatestFreshConversationContainer(previousContainers = null) {
     const containers = [...document.querySelectorAll('.conversation-container')];
-    const matches = containers.filter((container) => (container.textContent || "").includes(fuzzy));
-    if (!matches.length) return null;
+    if (!containers.length) return null;
 
     if (previousContainers) {
-      const fresh = matches.filter((container) => !previousContainers.has(container));
+      const fresh = containers.filter((container) => !previousContainers.has(container));
       if (fresh.length) return fresh[fresh.length - 1];
     }
 
-    return matches[matches.length - 1];
+    return containers[containers.length - 1] || null;
+  }
+
+  function getCurrentBestGenerationContainer(previousContainers = null) {
+    const fresh = findLatestFreshConversationContainer(previousContainers);
+    if (fresh) return fresh;
+    const containers = [...document.querySelectorAll('.conversation-container')];
+    return containers[containers.length - 1] || null;
   }
 
   function isGenerationStillProcessing(container) {
     if (!container) return true;
     const processingState = container.querySelector("processing-state");
     const text = container.textContent || "";
+    const composerState = getComposerState();
     return Boolean(
       processingState ||
       text.includes("Creating your image") ||
       text.includes("创建您的图片") ||
-      text.includes("生成中")
+      text.includes("生成中") ||
+      text.includes("Adjusting for Consistency") ||
+      text.includes("一致性调整") ||
+      (composerState.hasVoiceButton && composerState.sendDisabled)
     );
+  }
+
+  function hasVisibleGeneratedImage(container) {
+    if (!container) return false;
+    const sourceEl =
+      container.querySelector(".image-card-container") ||
+      container.querySelector(".attachment-container") ||
+      container;
+    const img = sourceEl.querySelector('img.loaded, img[src^="blob:"], img[src*="googleusercontent.com"]');
+    return Boolean(img);
   }
 
   function hasCompletedGeneratedImage(container) {
@@ -411,25 +463,51 @@
       downloadBtn.getAttribute("aria-disabled") !== "true" &&
       !isDownloadSpinnerVisible(downloadBtn)
     );
-    return Boolean(img && buttonReady && !isGenerationStillProcessing(container));
+    const composerState = getComposerState();
+    const composerReady = composerState.hasVoiceButton || composerState.hasSendButton;
+    return Boolean(img && buttonReady && composerReady && !isGenerationStillProcessing(container));
   }
 
-  async function waitForPromptGenerationComplete(promptText, previousContainers, timeoutMs = 90000, signal) {
+  function hasCompletedGenerationPhase(container) {
+    if (!container) return false;
+    return Boolean(hasVisibleGeneratedImage(container) && !isGenerationStillProcessing(container));
+  }
+
+  async function waitForPromptGenerationComplete(previousContainers, timeoutMs = 90000, signal, mode = "generate") {
     const startedAt = Date.now();
     let targetContainer = null;
 
     while (Date.now() - startedAt < timeoutMs) {
       if (signal?.aborted) throw new Error("Aborted");
-      if (!targetContainer) {
-        targetContainer = findConversationContainerByPrompt(promptText, previousContainers);
+      const latestCandidate = getCurrentBestGenerationContainer(previousContainers);
+      if (!targetContainer || !targetContainer.isConnected) {
+        targetContainer = latestCandidate;
+      } else if (latestCandidate && latestCandidate !== targetContainer) {
+        const latestDone = mode === "download"
+          ? hasCompletedGeneratedImage(latestCandidate)
+          : hasCompletedGenerationPhase(latestCandidate);
+        const targetDone = mode === "download"
+          ? hasCompletedGeneratedImage(targetContainer)
+          : hasCompletedGenerationPhase(targetContainer);
+        if (latestDone || !targetDone) {
+          targetContainer = latestCandidate;
+        }
       }
-      if (targetContainer && hasCompletedGeneratedImage(targetContainer)) {
+      const completed = mode === "download"
+        ? hasCompletedGeneratedImage(targetContainer)
+        : hasCompletedGenerationPhase(targetContainer);
+      if (targetContainer && completed) {
         return targetContainer;
       }
       await sleep(1500);
     }
 
     throw new Error("等待图片生成完成超时。");
+  }
+
+  function getGenerationWaitTimeoutMs() {
+    const configuredSeconds = Number(state.settings?.delaySeconds) || 60;
+    return Math.max(configuredSeconds * 1000, 180000);
   }
 
   async function waitForSendSync(oldStepCount, timeoutMs, signal) {
@@ -494,7 +572,7 @@
         await waitForSendSync(oldCount, 45000, abortController.signal);
 
         appendLog(`[任务 ${index + 1}] 正处于绘制阶段...`);
-        await waitForPromptGenerationComplete(item.prompt_en, previousContainers, 90000, abortController.signal);
+        await waitForPromptGenerationComplete(previousContainers, getGenerationWaitTimeoutMs(), abortController.signal, "download");
         appendLog(`[任务 ${index + 1}] 绘制完成。`);
         item.status = "generated";
         persistState(); render();
@@ -625,7 +703,7 @@
         await waitForSendSync(oldCount, 45000, abortController.signal);
 
         appendLog(`[任务 ${index + 1}] 正处于绘制阶段...`);
-        await waitForPromptGenerationComplete(item.prompt_en, previousContainers, 90000, abortController.signal);
+        await waitForPromptGenerationComplete(previousContainers, getGenerationWaitTimeoutMs(), abortController.signal, "generate");
         appendLog(`[任务 ${index + 1}] 绘制完成。`);
 
         item.status = "generated";
