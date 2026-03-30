@@ -1,0 +1,201 @@
+#gemini-batch-image-root {
+  position: fixed;
+  top: 88px;
+  right: 16px;
+  z-index: 2147483647;
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100vh - 104px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(16, 20, 32, 0.96), rgba(8, 11, 20, 0.96));
+  color: #f3f6fb;
+  border: 1px solid rgba(140, 166, 255, 0.25);
+  border-radius: 18px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+@media (max-width: 900px) {
+  #gemini-batch-image-root {
+    top: 72px;
+    right: 8px;
+    width: min(340px, calc(100vw - 16px));
+    max-height: calc(100vh - 84px);
+  }
+}
+
+#gemini-batch-image-root.gbi-collapsed {
+  width: auto;
+}
+
+.gbi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.gbi-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.gbi-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.gbi-icon-button,
+.gbi-button {
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+  transition: transform 0.16s ease, opacity 0.16s ease, background 0.16s ease;
+}
+
+.gbi-icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 14px;
+}
+
+.gbi-icon-button:hover,
+.gbi-button:hover {
+  transform: translateY(-1px);
+}
+
+.gbi-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.gbi-collapsed .gbi-body {
+  display: none;
+}
+
+.gbi-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gbi-label {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.88;
+}
+
+.gbi-textarea,
+.gbi-input,
+.gbi-select {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #f3f6fb;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.gbi-textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.gbi-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.gbi-button {
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #5b84ff, #7c5cff);
+  font-weight: 700;
+}
+
+.gbi-button[data-variant="secondary"] {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.gbi-button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.gbi-status {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #d1daf6;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.gbi-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.gbi-item {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.gbi-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.gbi-item-title {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.gbi-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(124, 92, 255, 0.22);
+}
+
+.gbi-item-subtitle,
+.gbi-item-body {
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.88;
+}
+
+.gbi-small {
+  font-size: 11px;
+  opacity: 0.75;
+}

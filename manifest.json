@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Batch Image Generator",
+  "version": "0.1.0",
+  "description": "Inject a batch image generation panel into gemini.google.com/app for prompt queueing and downloads.",
+  "permissions": [
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://gemini.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gemini.google.com/app*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
