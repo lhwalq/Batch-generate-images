@@ -167,7 +167,7 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     return;
   }
 
-  if (Date.now() - nextDownloadInfo.timestamp > 30000) {
+  if (Date.now() - nextDownloadInfo.timestamp > 180000) {
     nextDownloadInfo = null;
     suggest();
     return;
