@@ -1,5 +1,23 @@
 let nextDownloadInfo = null;
 
+function isLikelyGeminiImageDownload(item) {
+  const candidates = [
+    item?.url,
+    item?.finalUrl,
+    item?.referrer,
+    item?.filename,
+    item?.mime
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase());
+
+  const joined = candidates.join(" ");
+  const looksLikeChromeTemp =
+    joined.includes(".crdownload") ||
+    joined.includes("chrome-extension://");
+  return !looksLikeChromeTemp;
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request?.type === "GET_DOWNLOAD_BASELINE") {
     chrome.downloads.search({}, (items) => {
@@ -169,6 +187,11 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
 
   if (Date.now() - nextDownloadInfo.timestamp > 180000) {
     nextDownloadInfo = null;
+    suggest();
+    return;
+  }
+
+  if (!isLikelyGeminiImageDownload(item)) {
     suggest();
     return;
   }
