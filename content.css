@@ -113,6 +113,10 @@
   resize: vertical;
 }
 
+.gbi-textarea-compact {
+  min-height: 88px;
+}
+
 .gbi-row {
   display: grid;
   grid-template-columns: 1fr 1fr;

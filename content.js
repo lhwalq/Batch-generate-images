@@ -30,8 +30,13 @@
     running: false,
     items: [],
     logLines: ["准备就绪"],
-    settings: { delaySeconds: 60, includeThumbnail: true },
-    lastJsonText: ""
+    settings: {
+      delaySeconds: 60,
+      ratioPreset: "",
+      customRatioText: ""
+    },
+    lastJsonText: "",
+    lastKeyText: ""
   };
 
   let root, els = {}, abortController = null;
@@ -41,10 +46,19 @@
     return String(value ?? "").trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "_").slice(0, 80) || fallback;
   }
 
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   function buildFilename(item, index, subIndex = 0) {
     const order = String(index + 1).padStart(3, "0");
     const idPart = sanitizeFilenamePart(item.id || "id");
-    const promptPart = sanitizeFilenamePart(item.prompt_en || "img").substring(0, 25);
+    const promptPart = sanitizeFilenamePart(item.prompt || "img").substring(0, 25);
     const subPart = String(subIndex + 1).padStart(2, "0");
     return `${order}_id${idPart}_${promptPart}_v${subPart}.png`;
   }
@@ -80,8 +94,115 @@
     }));
   }
 
+  function restoreState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (saved?.settings && typeof saved.settings === "object") {
+        state.settings = {
+          ...state.settings,
+          ...saved.settings
+        };
+      }
+    } catch (_) {}
+  }
+
   function clearResumeState() {
     localStorage.removeItem(RESUME_KEY);
+  }
+
+  function getSelectedRatioSuffix() {
+    const custom = String(state.settings?.customRatioText || "").trim();
+    if (custom) return custom;
+    return String(state.settings?.ratioPreset || "").trim();
+  }
+
+  function buildFinalPrompt(prompt) {
+    const basePrompt = String(prompt ?? "").trim();
+    const ratioSuffix = getSelectedRatioSuffix();
+    if (!ratioSuffix) return basePrompt;
+    return `${basePrompt} ${ratioSuffix}`.trim();
+  }
+
+  function refreshQueuedPromptsFromRaw() {
+    state.items = state.items.map((item) => ({
+      ...item,
+      prompt: buildFinalPrompt(item.rawPrompt || item.prompt || "")
+    }));
+  }
+
+  function parseKeyPaths(input) {
+    return String(input || "")
+      .split(/[\n,]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  function getValueByPath(source, path) {
+    if (!path) return undefined;
+    const parts = String(path)
+      .split(".")
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    let current = source;
+    for (const part of parts) {
+      if (current == null) return undefined;
+
+      if (Array.isArray(current) && /^\d+$/.test(part)) {
+        current = current[Number(part)];
+        continue;
+      }
+
+      current = current[part];
+    }
+
+    return current;
+  }
+
+  function normalizePromptItems(value, path) {
+    const pathLabel = path || "item";
+    const list = Array.isArray(value) ? value : [value];
+    const normalized = [];
+
+    list.forEach((entry, index) => {
+      if (entry == null) return;
+
+      if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+        const prompt = String(entry).trim();
+        if (!prompt) return;
+        normalized.push({
+          id: `${pathLabel}-${index + 1}`,
+          sourceKey: pathLabel,
+          rawPrompt: prompt,
+          prompt: buildFinalPrompt(prompt),
+          status: "pending"
+        });
+        return;
+      }
+
+      if (typeof entry === "object") {
+        const prompt =
+          typeof entry.prompt === "string" ? entry.prompt.trim() :
+          typeof entry.prompt_en === "string" ? entry.prompt_en.trim() :
+          typeof entry.text === "string" ? entry.text.trim() :
+          typeof entry.content === "string" ? entry.content.trim() :
+          "";
+
+        if (!prompt) return;
+
+        normalized.push({
+          id: String(entry.id ?? `${pathLabel}-${index + 1}`),
+          sourceKey: pathLabel,
+          rawPrompt: prompt,
+          prompt: buildFinalPrompt(prompt),
+          status: "pending"
+        });
+      }
+    });
+
+    return normalized;
   }
 
   function findFirstElement(selectors) {
@@ -559,7 +680,7 @@
         if (item.status === "done" || item.status === "generated") continue;
 
         appendLog(`[生图 ${index + 1}/${state.items.length}] 正在启动...`);
-        await setPromptValue(item.prompt_en);
+        await setPromptValue(item.prompt);
         await sleep(3000); 
 
         const btn = getSubmitButton();
@@ -605,7 +726,7 @@
       const item = state.items[index];
       if (item.status !== "generated") continue;
 
-      const msg = findMessageByPrompt(item.prompt_en);
+      const msg = findMessageByPrompt(item.prompt);
       if (msg) {
         const imgs = [...msg.querySelectorAll('img')].filter(img => {
           const s = img.src || '';
@@ -691,7 +812,7 @@
         if (item.status === "done" || item.status === "generated") continue;
 
         appendLog(`[生图 ${index + 1}/${state.items.length}] 正在启动...`);
-        await setPromptValue(item.prompt_en);
+        await setPromptValue(item.prompt);
         await sleep(3000);
 
         const btn = getSubmitButton();
@@ -727,22 +848,41 @@
   function handleImport() {
     try {
       const text = els.jsonInput.value.trim();
+      const keyText = els.keyInput.value.trim();
       const data = JSON.parse(text);
-      let list = [];
-      if (data.main_image_prompts && Array.isArray(data.main_image_prompts)) list = [...data.main_image_prompts];
-      else if (Array.isArray(data)) list = [...data];
-      if (data.thumbnail_prompt) {
-        if (Array.isArray(data.thumbnail_prompt)) list = list.concat(data.thumbnail_prompt);
-        else list.push({ ...data.thumbnail_prompt, id: data.thumbnail_prompt.id || "thumbnail" });
+      const keyPaths = parseKeyPaths(keyText);
+      if (!keyPaths.length) {
+        throw new Error("请至少输入一个 key，支持逗号/换行分隔，支持 a.b.c 这种路径。");
       }
-      state.items = list.map((item, index) => ({
-        id: String(item.id ?? `item-${index + 1}`),
-        prompt_en: item.prompt_en, status: "pending"
+
+      const nextItems = [];
+      const missingKeys = [];
+
+      keyPaths.forEach((path) => {
+        const value = getValueByPath(data, path);
+        if (value == null) {
+          missingKeys.push(path);
+          return;
+        }
+        nextItems.push(...normalizePromptItems(value, path));
+      });
+
+      if (!nextItems.length) {
+        throw new Error("没有提取到可用内容。支持字符串、字符串数组，或包含 prompt / prompt_en / text / content 的对象。");
+      }
+
+      state.items = nextItems.map((item, index) => ({
+        ...item,
+        id: item.id || `item-${index + 1}`
       }));
       state.lastJsonText = text;
+      state.lastKeyText = keyText;
       render(); persistState();
-      appendLog(`导入 ${state.items.length} 个任务 (含封面图)。`);
-    } catch (e) { appendLog(`坏 JSON：${e.message}`); }
+      appendLog(`导入 ${state.items.length} 个任务，按 key 顺序执行。`);
+      if (missingKeys.length) {
+        appendLog(`以下 key 未找到，已跳过：${missingKeys.join(", ")}`);
+      }
+    } catch (e) { appendLog(`解析失败：${e.message}`); }
   }
 
   function render() {
@@ -761,7 +901,11 @@
       <div class="gbi-body">
         <div class="gbi-section">
           <label class="gbi-label">粘贴 JSON</label>
-          <textarea class="gbi-textarea" id="gbi-json-input">${state.lastJsonText || ""}</textarea>
+          <textarea class="gbi-textarea" id="gbi-json-input">${escapeHtml(state.lastJsonText || "")}</textarea>
+        </div>
+        <div class="gbi-section">
+          <label class="gbi-label">提取 key / 路径（按顺序）</label>
+          <textarea class="gbi-textarea gbi-textarea-compact" id="gbi-key-input" placeholder="例如：main_image_prompts&#10;thumbnail_prompt&#10;data.prompts.0">${escapeHtml(state.lastKeyText || "")}</textarea>
           <button class="gbi-button" id="gbi-import-btn">解析任务</button>
         </div>
         <div class="gbi-row">
@@ -770,12 +914,21 @@
             <input type="number" class="gbi-input" id="gbi-delay-input" value="${state.settings.delaySeconds}">
           </div>
           <div class="gbi-section">
-            <label class="gbi-label">封面支持</label>
-            <select class="gbi-select" id="gbi-thumb-select">
-              <option value="true" ${state.settings.includeThumbnail ? "selected" : ""}>包含</option>
-              <option value="false" ${!state.settings.includeThumbnail ? "selected" : ""}>不包含</option>
+            <label class="gbi-label">比例预设</label>
+            <select class="gbi-select" id="gbi-ratio-select">
+              <option value="" ${!state.settings.ratioPreset ? "selected" : ""}>不追加</option>
+              <option value="--ar 1:1" ${state.settings.ratioPreset === "--ar 1:1" ? "selected" : ""}>正方形 1:1</option>
+              <option value="--ar 3:4" ${state.settings.ratioPreset === "--ar 3:4" ? "selected" : ""}>竖版 3:4</option>
+              <option value="--ar 4:3" ${state.settings.ratioPreset === "--ar 4:3" ? "selected" : ""}>横版 4:3</option>
+              <option value="--ar 9:16" ${state.settings.ratioPreset === "--ar 9:16" ? "selected" : ""}>手机竖图 9:16</option>
+              <option value="--ar 16:9" ${state.settings.ratioPreset === "--ar 16:9" ? "selected" : ""}>宽屏 16:9</option>
             </select>
           </div>
+        </div>
+        <div class="gbi-section">
+          <label class="gbi-label">自定义比例/附加文案（优先于预设）</label>
+          <input class="gbi-input" id="gbi-custom-ratio-input" placeholder="例如：--ar 2:3" value="${escapeHtml(state.settings.customRatioText || "")}">
+          <div class="gbi-small">生成时会直接拼接到提示词末尾；留空则不追加。</div>
         </div>
         <div class="gbi-row">
           <button class="gbi-button" id="gbi-start-btn" ${state.running ? "disabled" : ""}>开始批量同步</button>
@@ -799,7 +952,8 @@
                   <span class="gbi-item-title">${i + 1}. ${item.id}</span>
                   <span class="gbi-badge">${item.status}</span>
                 </div>
-                <div class="gbi-item-body">${(item.prompt_en || "").substring(0, 50)}...</div>
+                <div class="gbi-item-subtitle">key: ${escapeHtml(item.sourceKey || "-")}</div>
+                <div class="gbi-item-body">${escapeHtml((item.prompt || "").substring(0, 80))}${(item.prompt || "").length > 80 ? "..." : ""}</div>
               </div>
             `).join("")}
           </div>
@@ -808,6 +962,7 @@
     `;
 
     els.jsonInput = root.querySelector("#gbi-json-input");
+    els.keyInput = root.querySelector("#gbi-key-input");
     els.importBtn = root.querySelector("#gbi-import-btn");
     els.startBtn = root.querySelector("#gbi-start-btn");
     els.stopBtn = root.querySelector("#gbi-stop-btn");
@@ -815,6 +970,9 @@
     els.downloadOnlyBtn = root.querySelector("#gbi-download-only-btn");
     els.clearBtn = root.querySelector("#gbi-clear-btn");
     els.toggleBtn = root.querySelector("#gbi-toggle-btn");
+    els.delayInput = root.querySelector("#gbi-delay-input");
+    els.ratioSelect = root.querySelector("#gbi-ratio-select");
+    els.customRatioInput = root.querySelector("#gbi-custom-ratio-input");
 
     els.importBtn.onclick = handleImport;
     els.startBtn.onclick = () => runQueue();
@@ -833,6 +991,23 @@
       render();
     };
     els.toggleBtn.onclick = () => { state.collapsed = !state.collapsed; render(); };
+    els.delayInput.onchange = () => {
+      const value = Number(els.delayInput.value);
+      state.settings.delaySeconds = Number.isFinite(value) && value > 0 ? value : 60;
+      persistState();
+    };
+    els.ratioSelect.onchange = () => {
+      state.settings.ratioPreset = els.ratioSelect.value;
+      refreshQueuedPromptsFromRaw();
+      persistState();
+      render();
+    };
+    els.customRatioInput.onchange = () => {
+      state.settings.customRatioText = els.customRatioInput.value;
+      refreshQueuedPromptsFromRaw();
+      persistState();
+      render();
+    };
 
     const logsEl = root.querySelector("#gbi-logs");
     if (logsEl) {
@@ -840,5 +1015,6 @@
     }
   }
 
+  restoreState();
   render();
 })();
