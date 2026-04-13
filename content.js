@@ -36,7 +36,8 @@
       customRatioText: ""
     },
     lastJsonText: "",
-    lastKeyText: ""
+    lastKeyText: "",
+    lastValueKeyText: ""
   };
 
   let root, els = {}, abortController = null;
@@ -161,7 +162,23 @@
     return current;
   }
 
-  function normalizePromptItems(value, path) {
+  function pickPromptFromObject(entry, valueKeys) {
+    const candidatePaths = valueKeys.length
+      ? valueKeys
+      : ["prompt", "prompt_en", "text", "content"];
+
+    for (const candidatePath of candidatePaths) {
+      const value = getValueByPath(entry, candidatePath);
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        const text = String(value).trim();
+        if (text) return text;
+      }
+    }
+
+    return "";
+  }
+
+  function normalizePromptItems(value, path, valueKeys = []) {
     const pathLabel = path || "item";
     const list = Array.isArray(value) ? value : [value];
     const normalized = [];
@@ -183,12 +200,7 @@
       }
 
       if (typeof entry === "object") {
-        const prompt =
-          typeof entry.prompt === "string" ? entry.prompt.trim() :
-          typeof entry.prompt_en === "string" ? entry.prompt_en.trim() :
-          typeof entry.text === "string" ? entry.text.trim() :
-          typeof entry.content === "string" ? entry.content.trim() :
-          "";
+        const prompt = pickPromptFromObject(entry, valueKeys);
 
         if (!prompt) return;
 
@@ -849,8 +861,13 @@
     try {
       const text = els.jsonInput.value.trim();
       const keyText = els.keyInput.value.trim();
+      const valueKeyText = els.valueKeyInput.value.trim();
+      state.lastJsonText = text;
+      state.lastKeyText = keyText;
+      state.lastValueKeyText = valueKeyText;
       const data = JSON.parse(text);
       const keyPaths = parseKeyPaths(keyText);
+      const valueKeys = parseKeyPaths(valueKeyText);
       if (!keyPaths.length) {
         throw new Error("请至少输入一个 key，支持逗号/换行分隔，支持 a.b.c 这种路径。");
       }
@@ -864,19 +881,17 @@
           missingKeys.push(path);
           return;
         }
-        nextItems.push(...normalizePromptItems(value, path));
+        nextItems.push(...normalizePromptItems(value, path, valueKeys));
       });
 
       if (!nextItems.length) {
-        throw new Error("没有提取到可用内容。支持字符串、字符串数组，或包含 prompt / prompt_en / text / content 的对象。");
+        throw new Error("没有提取到可用内容。请检查主 key 和对象内容字段 key 是否正确。");
       }
 
       state.items = nextItems.map((item, index) => ({
         ...item,
         id: item.id || `item-${index + 1}`
       }));
-      state.lastJsonText = text;
-      state.lastKeyText = keyText;
       render(); persistState();
       appendLog(`导入 ${state.items.length} 个任务，按 key 顺序执行。`);
       if (missingKeys.length) {
@@ -906,6 +921,11 @@
         <div class="gbi-section">
           <label class="gbi-label">提取 key / 路径（按顺序）</label>
           <textarea class="gbi-textarea gbi-textarea-compact" id="gbi-key-input" placeholder="例如：main_image_prompts&#10;thumbnail_prompt&#10;data.prompts.0">${escapeHtml(state.lastKeyText || "")}</textarea>
+        </div>
+        <div class="gbi-section">
+          <label class="gbi-label">对象里要取的内容字段（可选）</label>
+          <input class="gbi-input" id="gbi-value-key-input" placeholder="例如：prompt 或 content.text；留空则自动尝试 prompt / prompt_en / text / content" value="${escapeHtml(state.lastValueKeyText || "")}">
+          <div class="gbi-small">如果主 key 取出来是对象数组，这里决定从每个对象的哪个字段拿来生成。</div>
           <button class="gbi-button" id="gbi-import-btn">解析任务</button>
         </div>
         <div class="gbi-row">
@@ -963,6 +983,7 @@
 
     els.jsonInput = root.querySelector("#gbi-json-input");
     els.keyInput = root.querySelector("#gbi-key-input");
+    els.valueKeyInput = root.querySelector("#gbi-value-key-input");
     els.importBtn = root.querySelector("#gbi-import-btn");
     els.startBtn = root.querySelector("#gbi-start-btn");
     els.stopBtn = root.querySelector("#gbi-stop-btn");
@@ -975,6 +996,15 @@
     els.customRatioInput = root.querySelector("#gbi-custom-ratio-input");
 
     els.importBtn.onclick = handleImport;
+    els.jsonInput.oninput = () => {
+      state.lastJsonText = els.jsonInput.value;
+    };
+    els.keyInput.oninput = () => {
+      state.lastKeyText = els.keyInput.value;
+    };
+    els.valueKeyInput.oninput = () => {
+      state.lastValueKeyText = els.valueKeyInput.value;
+    };
     els.startBtn.onclick = () => runQueue();
     els.stopBtn.onclick = () => {
       clearResumeState();
